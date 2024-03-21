@@ -1,2 +1,2 @@
 # dbexport
-Exporting mysql to csv or sql file.
+Export mysql data to csv or sql file.
