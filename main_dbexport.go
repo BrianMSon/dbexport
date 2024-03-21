@@ -63,7 +63,7 @@ var (
 	isBulkOut = false
 )
 
-const maxLineSize = 102400 // 원하는 최대 줄 크기
+const maxLineSize = 102400 // Buffer Size for a line
 
 func main() {
 	targetDB, dbname, query, outfilename := parseArgs()
@@ -174,12 +174,6 @@ func loadConfigFromYML(targetDB string) (username, password, hostname, port stri
 	}
 
 	if serverInfo, ok := config.Servers[targetDB]; ok {
-		// fmt.Printf("%s Info:\n", targetDB)
-		// fmt.Println("Username:", serverInfo.Username)
-		// fmt.Println("Password:", serverInfo.Password)
-		// fmt.Println("Hostname:", serverInfo.Hostname)
-		// fmt.Println("Port:", serverInfo.Port)
-
 		username = serverInfo.Username
 		password = serverInfo.Password
 		hostname = serverInfo.Hostname
@@ -356,7 +350,6 @@ func saveToSQLFile(csvfilename, outsql_filename, csvHeader, tablename string, re
 			log.Fatal(err)
 		}
 		rowCount++
-		//println(record) // print record
 		if rowCount == 1 {
 			continue
 		}
@@ -368,20 +361,19 @@ func saveToSQLFile(csvfilename, outsql_filename, csvHeader, tablename string, re
 	queryCount := 0
 	for _, rows := range data {
 		strQuery := "INSERT INTO " + tablename + " (" + csvHeader + ") VALUES ("
-		//println(rows)
 
 		for i, row := range rows {
 			row = strings.Trim(row, " ")
 			if i > 0 {
 				strQuery += ","
 			}
-			// 데이터에 ' 가 있으면 Escape 처리
+			// If there is a ' in the data, escape it.
 			row = strings.ReplaceAll(row, "'", "\\'")
 			if strings.ToUpper(row) == "NULL" || strings.ToUpper(row) == "(NULL)" {
-				// NULL 처리 (작은 따옴표로 감싸지 않음)
+				// Set to NULL (not enclose in single quotes)
 				strQuery += "NULL"
 			} else {
-				// 작은 따옴표로 감싸기
+				// enclose in single quotes
 				strQuery += "'"
 				strQuery += row
 				strQuery += "'"
@@ -438,7 +430,7 @@ func saveBulkInsertQuery(filename string) {
 }
 
 func convertInsertQuery_To_BulkInsertQuery(filename, outfilename string, isReplaceOrgFile, isSilent bool) {
-	// SQL Text 파일 열기
+	// Open SQL file
 	file, err := os.Open(filename)
 	if err != nil {
 		panic(err)
@@ -447,56 +439,50 @@ func convertInsertQuery_To_BulkInsertQuery(filename, outfilename string, isRepla
 	var bulklines []string
 
 	///////////////////////////////////////////
-	// 라인별 읽기
+	// Read lines
 	insertStatement := ""
 	lineCount := 0
 	bytesCount := 0
 	scanner := bufio.NewScanner(file)
 	//////////////////////////
-	// 라인 최대 버퍼 조정
+	// set line buffer size
 	buf := make([]byte, maxLineSize)
 	scanner.Buffer(buf, maxLineSize)
 	//////////////////////////
 	for scanner.Scan() {
 		lineCount++
 		line := scanner.Text()
-		//fmt.Println(lineCount, " :: ", line)
-
 		convertedLine := line
 
 		bytesCount += len(line)
 
-		//fmt.Println("bytesCount:", bytesCount)
-
 		isInsertStatmentAdded := false
-		// 1000 라인씩 끊어서 쿼리 작성 (4MB 넘어가지 않도록)
+		// Write query 1000 lines at a time (not exceed 4MB)
 		if insertStatement != "" && (lineCount%1000 == 0 || bytesCount >= 3900000) {
 			lineCount = 0
 			bytesCount = 0
 			///////////////////////////////////////////
-			// 마지막줄 ), 는 ); 로 변경
+			// change ), to ); at the last line
 			lastLine := bulklines[len(bulklines)-1]
 			if len(lastLine) > 3 {
 				idxEndParentheses := strings.LastIndex(lastLine, "),")
 				if idxEndParentheses >= len(lastLine)-3 {
-					// 마지막 , 를 빼고 ; 로 대체
+					// replace the last , to ;
 					lastLine = lastLine[:len(lastLine)-1] + ";"
-					// 기존 마지막줄 제거하고
+					// remove the last line
 					bulklines = bulklines[:len(bulklines)-1]
-					// 변경한 lastLine을 추가하자
+					// add modified lastLine
 					bulklines = append(bulklines, lastLine)
 				}
 			}
 			///////////////////////////////////////////
 
-			//bulklines = append(bulklines, "-- --------------------------------")
-			// INSERT INTO문 추가
+			// add INSERT INTO statement
 			bulklines = append(bulklines, insertStatement)
-			//fmt.Println("DEBUG : insertStatement appended. (" + insertStatement + ")")
 			isInsertStatmentAdded = true
 		}
 
-		// INSERT문 추출 (INSERT INTO ~ VALUES)
+		// extract INSERT statement (INSERT INTO ~ VALUES)
 		startidx := strings.Index(line, "INSERT INTO")
 		if startidx >= 0 {
 			if insertStatement == "" {
@@ -504,47 +490,44 @@ func convertInsertQuery_To_BulkInsertQuery(filename, outfilename string, isRepla
 				if endidx >= 0 {
 					insertStatement = line[startidx : endidx+len("VALUES")]
 					if isSilent == false {
-						fmt.Println("-- insertStatement: " + insertStatement)
+						println("-- insertStatement: " + insertStatement)
 					}
-					// INSERT INTO문 추가 (첫줄)
+					// add INSERT INTO statement (the first line)
 					bulklines = append(bulklines, insertStatement)
 				}
 			}
 
-			// INSERT INTO .* VALUES 를 첫 행에만 추가하고 나머지는 제거
-			// ); 를 ) 로 변환하고 ,를 붙이자
+			// Add INSERT INTO .* VALUES to the first row only and remove the rest
+			// Replace ); to ) and add ,
 			convertedLine = convertInsertIntoLine(line, filename)
-			//fmt.Println("==> " + convertedLine)
 		} else {
-			// INSERT문이 아니면 그대로 넣어준다.
+			// Not INSERT statement
 			convertedLine = line
 
-			// INSERT문 초기화
+			// Reset INSERT statement
 			if insertStatement != "" {
 				insertStatement = ""
-				//fmt.Println("---end---")
 				lineCount = 0
 
 				///////////////////////////////////////////
-				// 마지막줄 ), 는 ); 로 변경
+				// change ), to ); at the last line
 				lastLine := bulklines[len(bulklines)-1]
 				if len(lastLine) > 3 {
 					idxEndParentheses := strings.LastIndex(lastLine, "),")
 					if idxEndParentheses >= len(lastLine)-3 {
-						// 마지막 , 를 빼고 ; 로 대체
+						// replace the last , to ;
 						lastLine = lastLine[:len(lastLine)-1] + ";"
-						// 기존 마지막줄 제거하고
+						// remove the last line
 						bulklines = bulklines[:len(bulklines)-1]
-						// 변경한 lastLine을 추가하자
+						// add modified lastLine
 						bulklines = append(bulklines, lastLine)
 					}
 				}
 				///////////////////////////////////////////
 
-				// 한 테이블이 끝날 때 마지막줄이 INSERT INTO 이면 지워준다. 2023-11-02
+				// When a table ends, if the last line is INSERT INTO, delete it.
 				if isInsertStatmentAdded == true && strings.Index(lastLine, "INSERT INTO") == 0 {
-					//fmt.Println("DEBUG : " + lastLine)
-					// 기존 마지막줄 제거하고
+					// remove the last line
 					bulklines = bulklines[:len(bulklines)-1]
 				}
 			}
@@ -554,31 +537,28 @@ func convertInsertQuery_To_BulkInsertQuery(filename, outfilename string, isRepla
 	}
 
 	///////////////////////////////////////////
-	// VALUES의 마지막줄 ), 는 ); 로 변경
+	// change ), to ); at the last line of VALUES
 	lastLine := bulklines[len(bulklines)-1]
-	//fmt.Println("===============> lastLine : " + lastLine)
 	idxValues := strings.Index(lastLine, "VALUES")
-	//fmt.Println("===============> idxValues : ", idxValues)
 	if idxValues > 0 {
-		//fmt.Println("===============> len(lastLine) : ", len(lastLine))
-		// 마지막 , 를 빼고 ; 로 대체
+		// replace the last , to ;
 		lastLine = lastLine[:len(lastLine)-1] + ";"
-		// 기존 마지막줄 제거하고
+		// remove the last line
 		bulklines = bulklines[:len(bulklines)-1]
-		// 변경한 lastLine을 추가하자
+		// add modified lastLine
 		bulklines = append(bulklines, lastLine)
 	} else {
 		///////////////////////////////////////////
-		// 마지막줄 ), 는 ); 로 변경
+		// change ), to ); at the last line
 		lastLine := bulklines[len(bulklines)-1]
 		if len(lastLine) > 3 {
 			idxEndParentheses := strings.LastIndex(lastLine, "),")
 			if idxEndParentheses >= len(lastLine)-3 {
-				// 마지막 , 를 빼고 ; 로 대체
+				// replace the last , to ;
 				lastLine = lastLine[:len(lastLine)-1] + ";"
-				// 기존 마지막줄 제거하고
+				// remove the last line
 				bulklines = bulklines[:len(bulklines)-1]
-				// 변경한 lastLine을 추가하자
+				// add modified lastLine
 				bulklines = append(bulklines, lastLine)
 			}
 		}
@@ -586,37 +566,35 @@ func convertInsertQuery_To_BulkInsertQuery(filename, outfilename string, isRepla
 	}
 	///////////////////////////////////////////
 
-	// 입력 파일 닫기
+	// close input file
 	file.Close()
 
 	if isReplaceOrgFile == true {
 		outfilename = filename
 	}
 
-	// 파일 출력
+	// create outfile
 	outfile, err := os.Create(outfilename)
 	if err != nil {
 		printError("Create outfile error! (" + outfilename + ")")
 		log.Fatal("<2>", err)
 	}
 
-	// 각 라인마다 파일에 쓰기
+	// write lines to the file.
 	for _, line := range bulklines {
 		fmt.Fprintln(outfile, line)
 		if isSilent == false {
-			fmt.Println(line) // debug
+			println(line) // debug
 		}
 	}
 
-	// 출력 파일 닫기
+	// close output file
 	outfile.Close()
-	//fmt.Println("-----------------------------------------------")
 }
 
 func convertInsertIntoLine(line string, filename string) string {
-	// INSERT INTO .* VALUES 제거하고 끝에 있는 ; 제거하고 , 를 붙이자
+	// Remove INSERT INTO .* VALUES and replace the ; at the end with ,
 	retline := ""
-	//fmt.Println("line : " + line)
 
 	startidx := strings.Index(line, "INSERT INTO")
 	if startidx >= 0 {
@@ -631,7 +609,6 @@ func convertInsertIntoLine(line string, filename string) string {
 		}
 	}
 
-	//fmt.Println("retline : " + retline)
 	return retline
 }
 
@@ -645,14 +622,14 @@ func countLinesInFile(filename string, excludeString string) (int, error) {
 	lineCount := 0
 	scanner := bufio.NewScanner(file)
 	//////////////////////////
-	// 라인 최대 버퍼 조정
+	// set line buffer size
 	buf := make([]byte, maxLineSize)
 	scanner.Buffer(buf, maxLineSize)
 	//////////////////////////
 	for scanner.Scan() {
 		line := scanner.Text()
 
-		// "INSERT INTO"로 시작하는 라인을 제외
+		// exclude excludeString("INSERT INTO")
 		if excludeString != "" && strings.HasPrefix(line, excludeString) {
 			continue
 		}
